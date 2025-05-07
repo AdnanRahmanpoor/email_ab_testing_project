@@ -1,0 +1,17 @@
+,dtype,missing,missing_percent,unique_values
+user_id,int64,0,0.0,500000
+variant,object,0,0.0,3
+send_time,object,0,0.0,3
+content_layout,object,0,0.0,3
+account_age,float64,0,0.0,364
+feature_usage,float64,0,0.0,50
+user_segment,object,0,0.0,4
+open,int64,0,0.0,2
+click,int64,0,0.0,2
+convert,int64,0,0.0,2
+timestamp,datetime64[ns],0,0.0,347319
+device,object,0,0.0,3
+engagement_score,int64,0,0.0,6
+day_of_week,object,0,0.0,7
+hour_of_day,int32,0,0.0,14
+date,object,0,0.0,15
