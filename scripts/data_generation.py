@@ -3,9 +3,7 @@ import numpy as np
 import random
 import os
 import time
-import concurrent.futures
 import multiprocessing
-from functools import partial
 from joblib import Parallel, delayed
 
 def generate_user_batch(batch_size, start_id, include_nulls=True):
@@ -99,10 +97,10 @@ def generate_user_batch(batch_size, start_id, include_nulls=True):
     # Base click probabilities
     click_probs = np.zeros(len(opened_indices))
     for i, idx in enumerate(opened_indices):
-        if df.loc[idx, 'variant'] == 'A':
-            click_probs[i] = 0.25 + (df.loc[idx, 'feature_usage'] / 200)
-        elif df.loc[idx, 'variant'] == 'B':
-            click_probs[i] = 0.20 + (df.loc[idx, 'feature_usage'] / 250)
+        if df.iloc[idx]['variant'] == 'A':
+            click_probs[i] = 0.25 + (df.iloc[idx]['feature_usage'] / 200)
+        elif df.iloc[idx]['variant'] == 'B':
+            click_probs[i] = 0.20 + (df.iloc[idx]['feature_usage'] / 250)
         else:  # Control
             click_probs[i] = 0.15
     
@@ -118,10 +116,10 @@ def generate_user_batch(batch_size, start_id, include_nulls=True):
     # Base conversion probabilities
     convert_probs = np.zeros(len(clicked_indices))
     for i, idx in enumerate(clicked_indices):
-        if df.loc[idx, 'variant'] == 'A':
-            convert_probs[i] = 0.15 if df.loc[idx, 'user_segment'] == 'active' else 0.08
-        elif df.loc[idx, 'variant'] == 'B':
-            convert_probs[i] = 0.12 if df.loc[idx, 'user_segment'] == 'new' else 0.10
+        if df.iloc[idx]['variant'] == 'A':
+            convert_probs[i] = 0.15 if df.iloc[idx]['user_segment'] == 'active' else 0.08
+        elif df.iloc[idx]['variant'] == 'B':
+            convert_probs[i] = 0.12 if df.iloc[idx]['user_segment'] == 'new' else 0.10
         else:  # Control
             convert_probs[i] = 0.05
     
@@ -148,26 +146,25 @@ def generate_user_batch(batch_size, start_id, include_nulls=True):
     random_state.shuffle(batch_timestamps)
     df['timestamp'] = batch_timestamps
     
-    # Adjust timestamps based on send_time more efficiently
+    # Create temporary arrays for hour and minute adjustments
+    hours = np.zeros(len(df), dtype=int)
+    minutes = rng.randint(0, 60, size=len(df))
+    
+    # Adjust timestamps based on send_time
     morning_mask = df['send_time'] == 'morning'
     afternoon_mask = df['send_time'] == 'afternoon'
     evening_mask = df['send_time'] == 'evening'
     
-    # Generate random hours and minutes for each send_time category
-    df.loc[morning_mask, 'hour'] = rng.randint(8, 12, size=morning_mask.sum())
-    df.loc[afternoon_mask, 'hour'] = rng.randint(12, 17, size=afternoon_mask.sum())
-    df.loc[evening_mask, 'hour'] = rng.randint(17, 22, size=evening_mask.sum())
-    df['minute'] = rng.randint(0, 60, size=len(df))
+    hours[morning_mask] = rng.randint(8, 12, size=morning_mask.sum())
+    hours[afternoon_mask] = rng.randint(12, 17, size=afternoon_mask.sum())
+    hours[evening_mask] = rng.randint(17, 22, size=evening_mask.sum())
     
     # Apply the hour and minute adjustments
     for i in range(len(df)):
         df.at[i, 'timestamp'] = df.at[i, 'timestamp'].replace(
-            hour=int(df.at[i, 'hour']), 
-            minute=int(df.at[i, 'minute'])
+            hour=int(hours[i]), 
+            minute=int(minutes[i])
         )
-    
-    # Drop the temporary columns
-    df = df.drop(['hour', 'minute'], axis=1)
     
     # Add device type
     df['device'] = rng.choice(
@@ -213,8 +210,7 @@ def generate_email_data(n_users=500000, include_nulls=True, include_duplicates=T
     print(f"Generating data for {n_users} users with optimized parallel processing...")
     
     # For maximum speed, use more cores and smaller batches
-    num_physical_cores = multiprocessing.cpu_count() // 2 if hasattr(os, 'sched_getaffinity') else multiprocessing.cpu_count()
-    num_workers = min(multiprocessing.cpu_count() * 2, 32)  # Use hyperthreading, up to 32 workers
+    num_workers = min(multiprocessing.cpu_count(), 32)  # Use up to 32 workers
     batch_size = min(10000, max(1000, n_users // (num_workers * 2)))  # Smaller batches
     
     # Calculate how many complete batches we need
@@ -244,7 +240,7 @@ def generate_email_data(n_users=500000, include_nulls=True, include_duplicates=T
     )
     
     print(f"Parallel processing complete. Combining {len(dfs)} batches...")
-    # Combine all batches - using list comprehension for speed
+    # Combine all batches
     df = pd.concat(dfs, ignore_index=True)
     
     # Add duplicate records if requested - optimized version
@@ -279,31 +275,19 @@ def generate_email_data(n_users=500000, include_nulls=True, include_duplicates=T
     # For large datasets, use optimized CSV writing
     print(f"Saving {len(df)} records to CSV...")
     
-    # Create directory if it doesn't exist
-    os.makedirs('data/raw', exist_ok=True)
-    
-    # Define chunk writing function
-    def write_chunk(df_chunk, file_path, mode='a', header=False):
-        df_chunk.to_csv(file_path, mode=mode, header=header, index=False)
-    
-    # Determine ideal chunk size for writing
-    chunk_size = min(100000, len(df))
-    
-    # First chunk with header
-    write_chunk(df.iloc[0:chunk_size], f'data/raw/{output_file}', mode='w', header=True)
-    
-    # Write remaining chunks in parallel if needed
-    if len(df) > chunk_size:
-        chunks = []
-        for i in range(chunk_size, len(df), chunk_size):
-            end_idx = min(i + chunk_size, len(df))
-            chunks.append(df.iloc[i:end_idx])
-        
-        # Use joblib for parallel writing
-        Parallel(n_jobs=min(8, os.cpu_count() or 4), verbose=0)(
-            delayed(write_chunk)(chunk, f'data/raw/{output_file}', mode='a', header=False) 
-            for chunk in chunks
-        )
+    output_path = f'data/raw/{output_file}'
+
+    chunk_size = 100000
+
+    for i, start_idx in enumerate(range(0, len(df), chunk_size)):
+        end_idx = min(start_idx + chunk_size, len(df))
+        chunk = df.iloc[start_idx:end_idx]
+
+        header = (i == 0)
+
+        mode = 'w' if i == 0 else 'a'
+
+        chunk.to_csv(output_path, mode=mode, header=header, index=False, escapechar='\\')
     
     print(f"Successfully generated and saved {len(df)} records")
     
@@ -312,19 +296,10 @@ def generate_email_data(n_users=500000, include_nulls=True, include_duplicates=T
 if __name__ == "__main__":
     import time
     
-    # Set pandas to use more efficient dtype defaults to reduce memory
-    # pd.set_option('mode.dtype_backend', 'pyarrow')
-    
     # Force NumPy to use multiple threads
     os.environ["OMP_NUM_THREADS"] = str(multiprocessing.cpu_count())
     os.environ["MKL_NUM_THREADS"] = str(multiprocessing.cpu_count())
     os.environ["OPENBLAS_NUM_THREADS"] = str(multiprocessing.cpu_count())
-    
-    # Use process pool for joblib if on Linux
-    if os.name == 'posix':
-        joblib_backend = 'multiprocessing'
-    else:
-        joblib_backend = 'threading'
     
     start_time = time.time()
     print("Starting optimized parallel email campaign data generation...")
